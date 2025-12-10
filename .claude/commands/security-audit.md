@@ -1,0 +1,263 @@
+# Security Audit
+
+Perform a comprehensive security audit.
+
+**Argument:** $ARGUMENTS
+
+**Default behavior:** Scan only the current working directory (`$CWD`).
+
+**Modifiers:**
+- `--all` or `-a`: Scan all projects in `scanRoot` instead of just current directory
+- `<project-name>`: Scan a specific project by name (relative to `scanRoot`)
+
+## Configuration
+
+Load configuration from: `~/Projects/agents/security-agent/.security-agent/config.json`
+
+The config contains:
+- `scanRoot`: Root directory containing projects to scan
+- `excludeDirs`: Directories to skip during scanning
+- `vercelTeam`: Vercel team slug for log access
+- `githubOrg`: GitHub org/username for API access
+- `supabase.extractFromEnv`: If true, extract project refs from project env files
+- `supabase.envFile`: Env file to read (e.g., `.env.local`)
+- `supabase.envVar`: Variable containing Supabase URL (e.g., `SUPABASE_URL`)
+
+## Execution Steps
+
+### 1. Load History
+
+Read these files from `~/Projects/agents/security-agent/.security-agent/`:
+- `known-issues.json` - Previously identified vulnerabilities
+- `fixed-issues.json` - Resolved issues with fix timestamps
+
+Review previous audit logs in `audit-logs/` to avoid redundant checks.
+
+### 2. Discover Projects
+
+**Determine scan target based on `$ARGUMENTS`:**
+
+1. If `$ARGUMENTS` is empty: scan current working directory (`$CWD`) only
+2. If `$ARGUMENTS` is `--all` or `-a`: scan all projects in `scanRoot`
+3. If `$ARGUMENTS` is a project name: scan `scanRoot/<project-name>`
+
+**For `--all` mode**, discover subdirectories containing:
+- `package.json` (Node.js/JavaScript)
+- `pyproject.toml` or `requirements.txt` (Python)
+
+Exclude directories matching `excludeDirs` config.
+
+**For single project mode** (default or named), verify the directory contains `package.json`, `pyproject.toml`, or `requirements.txt` before proceeding.
+
+### 3. Package Vulnerability Scan
+
+For each discovered project, run the appropriate audit:
+
+**Node.js projects:**
+```bash
+~/Projects/agents/security-agent/scripts/scan-packages.sh <project-path>
+```
+
+This runs `pnpm audit --json` or equivalent based on lockfile.
+
+**Python projects:**
+The script also handles `pip-audit` for Python dependencies.
+
+Parse the JSON output and correlate with `known-issues.json`.
+
+### 4. Dependency Version Check
+
+For each project:
+- Compare installed versions against latest available
+- Check for outdated packages with known CVEs
+- Query Dependabot alerts if GitHub repo exists:
+
+```bash
+gh api /repos/{owner}/{repo}/dependabot/alerts --jq '.[] | {package: .security_vulnerability.package.name, severity: .security_advisory.severity, cve: .security_advisory.cve_id}'
+```
+
+### 5. Recent Vulnerability Search
+
+Query OSV API for critical dependencies:
+
+```bash
+~/Projects/agents/security-agent/scripts/query-osv.sh npm <package-name> <version>
+~/Projects/agents/security-agent/scripts/query-osv.sh PyPI <package-name> <version>
+```
+
+Use web search to check for recent security advisories affecting:
+- Next.js
+- Vercel
+- Supabase
+- Any major dependencies found in projects
+
+### 6. Log Review
+
+If configured, check deployment and function logs.
+
+**Extract Supabase project ref from each project (if `supabase.extractFromEnv` is true):**
+```bash
+# Read only SUPABASE_URL from the project's .env.local, extract project ref
+grep "^SUPABASE_URL=" <project-path>/.env.local | sed 's/.*https:\/\/\([^.]*\)\.supabase\.co.*/\1/'
+```
+
+Security notes:
+- Only parse the specific env var, ignore all other values
+- Extract only the subdomain (project ref), discard the full URL
+- Never log or persist the extracted ref beyond the current audit session
+
+**Run log checks:**
+```bash
+~/Projects/agents/security-agent/scripts/check-logs.sh [vercel-project] [supabase-ref]
+```
+
+Look for patterns indicating:
+- Unusual error spikes
+- Authentication failures
+- Rate limiting triggers
+- Unauthorized access attempts
+
+### 7. Breach Indicators
+
+For each project with a git repository:
+
+**Check for exposed secrets in history:**
+```bash
+git log -p --all | grep -iE "(api[_-]?key|secret|password|token|credential)" | head -50
+```
+
+**Verify .gitignore includes sensitive files:**
+```bash
+grep -E "\.env|credentials|secrets" .gitignore
+```
+
+**Check for hardcoded credentials:**
+```bash
+grep -rE "(api[_-]?key|password|secret)\s*[:=]\s*['\"][^'\"]+['\"]" --include="*.js" --include="*.ts" --include="*.py" .
+```
+
+### 8. Generate Report
+
+Summarize all findings by severity:
+- **Critical**: Actively exploited CVEs, exposed secrets
+- **High**: CVEs with public exploits, auth vulnerabilities
+- **Medium**: Outdated dependencies with known issues
+- **Low**: Informational, best practice recommendations
+
+Compare against previous audits to highlight:
+- New issues since last scan
+- Resolved issues
+- Recurring problems
+
+### 9. Persist Results
+
+**Save audit log:**
+Write results to `~/Projects/agents/security-agent/.security-agent/audit-logs/YYYYMMDD-HHMMSS.json`
+
+Format:
+```json
+{
+  "timestamp": "ISO-8601",
+  "projectsScanned": [],
+  "summary": {"critical": 0, "high": 0, "medium": 0, "low": 0},
+  "newIssues": [],
+  "resolvedIssues": [],
+  "packagesUpdated": [],
+  "logsReviewed": {},
+  "breachIndicators": [],
+  "recommendations": []
+}
+```
+
+**Update known-issues.json:**
+Add new vulnerabilities with:
+- `id`: CVE or advisory ID
+- `package`: Affected package name
+- `version`: Vulnerable version
+- `severity`: critical/high/medium/low
+- `project`: Project where found
+- `discoveredAt`: ISO timestamp
+- `source`: How it was found (pnpm-audit, osv, etc.)
+- `description`: Brief description
+
+**Update fixed-issues.json:**
+Move resolved issues with:
+- Original fields plus `fixedAt` timestamp
+- `fixedVersion`: Version that resolved the issue
+- `fixMethod`: How it was fixed
+
+### 10. Apply Automatic Fixes
+
+For vulnerabilities with available fix versions, apply updates automatically when ALL of these conditions are met:
+- Fix version is specified in the vulnerability advisory
+- Update is patch or minor version (not major)
+- Package is a direct dependency
+
+**Node.js:**
+```bash
+cd <project-path>
+pnpm add <package>@<fix-version>   # For specific fix versions
+pnpm update <package>               # For minor/patch updates
+```
+
+**Python:**
+```bash
+cd <project-path>
+uv pip install <package>==<fix-version>
+```
+
+**After each fix:**
+1. Run tests if available:
+   - Node.js: `pnpm test` (if test script exists in package.json)
+   - Python: `pytest` (if tests/ directory exists)
+
+2. If tests pass:
+   - Commit changes: `Fix: Update <package> to <version> (<CVE-ID>)`
+   - Update `fixed-issues.json` with resolution details
+   - Remove from `known-issues.json`
+
+3. If tests fail:
+   - Revert: `git checkout -- package.json pnpm-lock.yaml` or `git checkout -- requirements.txt`
+   - Flag issue for manual review in report
+   - Keep in `known-issues.json` with note about failed auto-fix
+
+**Skip automatic fixes (flag for manual review) when:**
+- Major version update required
+- Transitive dependency (requires upstream update)
+- No fix version available
+- Tests fail after update
+
+## Output Format
+
+Present findings in a clear summary:
+
+```
+## Security Audit Summary - YYYY-MM-DD
+
+### Projects Scanned
+- project-a (Node.js)
+- project-b (Python)
+
+### Findings by Severity
+- Critical: X
+- High: X
+- Medium: X
+- Low: X
+
+### Critical Issues
+1. [CVE-XXXX] package@version in project-a
+   - Description
+   - Recommended fix
+
+### New Since Last Audit
+- List of new findings
+
+### Resolved Since Last Audit
+- List of fixed issues
+
+### Recommendations
+1. Priority actions
+2. ...
+
+Results saved to: ~/Projects/agents/security-agent/.security-agent/audit-logs/YYYYMMDD-HHMMSS.json
+```
