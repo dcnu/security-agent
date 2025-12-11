@@ -165,6 +165,18 @@ Format:
   "packagesUpdated": [],
   "logsReviewed": {},
   "breachIndicators": [],
+  "exploitationAssessments": [
+    {
+      "issueId": "CVE-XXXX",
+      "vulnerabilityType": "injection",
+      "remoteExploitable": true,
+      "publicExploitsAvailable": false,
+      "exploitationIndicatorsFound": false,
+      "evidence": [],
+      "status": "no_indicators_detected"
+    }
+  ],
+  "potentiallyExploitedIssues": [],
   "recommendations": []
 }
 ```
@@ -179,6 +191,13 @@ Add new vulnerabilities with:
 - `discoveredAt`: ISO timestamp
 - `source`: How it was found (pnpm-audit, osv, etc.)
 - `description`: Brief description
+- `exploitationAssessment`: Object with exploitation analysis results
+  - `vulnerabilityType`: Type of vulnerability (injection, deserialization, auth_bypass, path_traversal, etc.)
+  - `remoteExploitable`: Boolean
+  - `publicExploitsAvailable`: Boolean
+  - `exploitationIndicatorsFound`: Boolean
+  - `evidence`: Array of evidence objects (file paths, commit hashes, log entries)
+  - `assessedAt`: ISO timestamp of when assessment was performed
 
 **Update fixed-issues.json:**
 Move resolved issues with:
@@ -186,7 +205,82 @@ Move resolved issues with:
 - `fixedVersion`: Version that resolved the issue
 - `fixMethod`: How it was fixed
 
-### 10. Apply Automatic Fixes
+### 10. Exploitation Assessment
+
+Before applying fixes, evaluate whether identified vulnerabilities may have already been exploited. For each security issue being fixed in this session:
+
+**a) Analyze vulnerability characteristics:**
+- Determine if the vulnerability allows remote exploitation
+- Check if authentication is required to exploit
+- Assess if public exploit code exists (search GitHub, ExploitDB, Metasploit modules)
+
+**b) Search codebase for exploitation indicators:**
+
+For **injection vulnerabilities** (SQL injection, command injection, XSS):
+```bash
+# Check git history for suspicious commits around user-input handling code
+git log --oneline --all --since="1 year ago" -p -- "*.js" "*.ts" "*.py" | \
+  grep -iE "(eval|exec|system|shell|innerHTML|dangerouslySetInnerHTML)" | head -50
+
+# Look for unexpected data patterns in configuration or database files
+grep -rE "(\$\{|<%|<\?|;--|UNION\s+SELECT)" --include="*.json" --include="*.sql" . 2>/dev/null
+```
+
+For **prototype pollution / deserialization** vulnerabilities:
+```bash
+# Check for unexpected object properties in config files
+grep -rE '("__proto__|constructor|prototype)' --include="*.json" . 2>/dev/null
+
+# Search for serialized payloads in data files
+grep -rE "(rO0AB|aced0005|gASV)" --include="*.json" --include="*.txt" . 2>/dev/null
+```
+
+For **authentication/authorization bypasses**:
+```bash
+# Review recent auth-related commits for suspicious patterns
+git log --oneline --all --since="6 months ago" -p -- "*auth*" "*login*" "*session*" | head -100
+
+# Check logs for auth anomalies (if available)
+grep -iE "(admin|root|sudo|superuser)" ~/.security-agent/audit-logs/*.json 2>/dev/null
+```
+
+For **path traversal / file inclusion**:
+```bash
+# Search for traversal patterns in logs and data
+grep -rE "(\.\.\/|\.\.\\\\|%2e%2e)" . 2>/dev/null | head -50
+```
+
+**c) Review git history around vulnerable code:**
+```bash
+# Get commits that touched the vulnerable file/function
+git log --oneline -20 -- <vulnerable-file>
+
+# Check for unusual commit patterns (odd hours, bulk changes, unfamiliar authors)
+git log --format="%h %ai %an: %s" --since="6 months ago" -- <vulnerable-file>
+```
+
+**d) Check runtime artifacts:**
+- Examine log files for error patterns associated with exploitation attempts
+- Look for unexpected files in temp directories or upload locations
+- Check for modified timestamps on sensitive files
+
+**e) Document findings:**
+
+If exploitation indicators are found:
+- Flag issue as **POTENTIALLY EXPLOITED** in the audit report
+- Record specific evidence (file paths, commit hashes, log entries)
+- Add to `known-issues.json` with `exploitationIndicators` array
+- Recommend incident response procedures before applying fix
+
+If no indicators found:
+- Note "No exploitation indicators detected" in report
+- Proceed with fix application
+
+**Severity escalation:**
+- If exploitation is suspected, escalate severity to **Critical** regardless of original rating
+- Recommend immediate response: rotate credentials, review access logs, notify stakeholders
+
+### 11. Apply Automatic Fixes
 
 For vulnerabilities with available fix versions, apply updates automatically when ALL of these conditions are met:
 - Fix version is specified in the vulnerability advisory
@@ -248,6 +342,21 @@ Present findings in a clear summary:
 1. [CVE-XXXX] package@version in project-a
    - Description
    - Recommended fix
+
+### Exploitation Assessment
+For each vulnerability being fixed:
+
+1. [CVE-XXXX] package@version
+   - Vulnerability type: [injection/deserialization/auth bypass/etc.]
+   - Remote exploitable: Yes/No
+   - Public exploits available: Yes/No
+   - **Exploitation indicators found:** Yes/No
+   - Evidence: [file paths, commit hashes, log entries if applicable]
+   - Status: POTENTIALLY EXPLOITED / No indicators detected
+
+⚠️ POTENTIALLY EXPLOITED ISSUES (if any):
+- [CVE-XXXX] Evidence: [summary of findings]
+  - Recommended immediate actions before fix
 
 ### New Since Last Audit
 - List of new findings

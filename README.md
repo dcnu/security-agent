@@ -64,6 +64,7 @@ cp -r .security-agent.example .security-agent
 - **OSV API Query** - Open Source Vulnerabilities database
 - **Log Review** - Vercel/Supabase security patterns
 - **Breach Indicators** - Exposed secrets, hardcoded credentials
+- **Exploitation Assessment** - Detects if vulnerabilities were exploited before fix
 - **Automatic Fixes** - Patch/minor updates applied automatically
 - **Persistence** - Tracks issues over time
 
@@ -80,6 +81,25 @@ After fix:
 - Issue moved to `fixed-issues.json`
 
 Manual review for: major updates, transitive deps, no fix available, test failures.
+
+## Exploitation Assessment
+
+Before applying fixes, evaluates whether vulnerabilities may have been exploited:
+
+- **Vulnerability analysis** - Remote exploitability, public exploits available
+- **Codebase scanning** - Searches for exploitation indicators by vulnerability type:
+  - Injection: suspicious eval/exec patterns, SQL injection signatures
+  - Prototype pollution: `__proto__` properties, serialized payloads
+  - Auth bypass: anomalous auth commits, privileged access patterns
+  - Path traversal: `../` patterns in logs/data
+- **Git history review** - Unusual commits around vulnerable code
+- **Runtime artifacts** - Log patterns, unexpected files, timestamp anomalies
+
+If exploitation indicators found:
+- Issue flagged as **POTENTIALLY EXPLOITED**
+- Severity escalated to Critical
+- Evidence recorded in audit log
+- Incident response recommended before applying fix
 
 ## Directory Structure
 
