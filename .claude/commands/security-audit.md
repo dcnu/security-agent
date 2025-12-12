@@ -91,6 +91,56 @@ Use web search to check for recent security advisories affecting:
 - Supabase
 - Any major dependencies found in projects
 
+### 5a. Vercel Platform Security Check
+
+**Check Vercel security advisories and recent CVEs:**
+
+1. **Query for Vercel-specific vulnerabilities:**
+   - Search web for: `"Vercel" CVE site:nvd.nist.gov OR site:cve.mitre.org` (last 6 months)
+   - Search web for: `Vercel security advisory {current_year}`
+   - Check: https://vercel.com/changelog (filter for security-related entries)
+
+2. **Check @vercel/* package vulnerabilities:**
+   ```bash
+   # Query OSV for Vercel SDK packages found in projects
+   ~/Projects/agents/security-agent/scripts/query-osv.sh npm @vercel/analytics <version>
+   ~/Projects/agents/security-agent/scripts/query-osv.sh npm @vercel/og <version>
+   ~/Projects/agents/security-agent/scripts/query-osv.sh npm @vercel/kv <version>
+   ~/Projects/agents/security-agent/scripts/query-osv.sh npm @vercel/postgres <version>
+   ~/Projects/agents/security-agent/scripts/query-osv.sh npm @vercel/blob <version>
+   ~/Projects/agents/security-agent/scripts/query-osv.sh npm @vercel/edge <version>
+   ```
+
+3. **Check Next.js vulnerabilities** (Vercel-maintained):
+   ```bash
+   ~/Projects/agents/security-agent/scripts/query-osv.sh npm next <version>
+   ```
+   Also search: `Next.js CVE {current_year}` and `Next.js security vulnerability`
+
+4. **Review Vercel-specific attack vectors:**
+   - Edge function vulnerabilities
+   - Serverless function timeout/memory exploits
+   - Environment variable exposure risks
+   - Preview deployment security (exposed secrets in PR previews)
+   - Build log exposure
+
+5. **Check project Vercel configuration for security issues:**
+   ```bash
+   # Look for vercel.json misconfigurations
+   if [[ -f "<project-path>/vercel.json" ]]; then
+     # Check for overly permissive headers, redirects, or rewrites
+     cat <project-path>/vercel.json | jq '.headers, .redirects, .rewrites' 2>/dev/null
+   fi
+
+   # Check for exposed environment variables in next.config.js
+   grep -E "NEXT_PUBLIC_.*SECRET|NEXT_PUBLIC_.*KEY|NEXT_PUBLIC_.*TOKEN" <project-path>/next.config.* 2>/dev/null
+   ```
+
+6. **Flag Vercel-specific findings:**
+   - Add to report under "Platform Security" section
+   - Cross-reference with project's deployed Vercel version (if detectable)
+   - Note any mitigations already in place (WAF, rate limiting, etc.)
+
 ### 6. Log Review
 
 If configured, check deployment and function logs.
@@ -177,6 +227,22 @@ Format:
     }
   ],
   "potentiallyExploitedIssues": [],
+  "platformSecurity": {
+    "vercel": {
+      "advisoriesChecked": true,
+      "cveSearchDate": "ISO-8601",
+      "findings": [],
+      "configIssues": [],
+      "nextJsVersion": "x.x.x",
+      "vercelPackages": [
+        {"name": "@vercel/analytics", "version": "x.x.x", "vulnerable": false}
+      ]
+    },
+    "supabase": {
+      "advisoriesChecked": true,
+      "findings": []
+    }
+  },
   "recommendations": []
 }
 ```
@@ -357,6 +423,19 @@ For each vulnerability being fixed:
 ⚠️ POTENTIALLY EXPLOITED ISSUES (if any):
 - [CVE-XXXX] Evidence: [summary of findings]
   - Recommended immediate actions before fix
+
+### Platform Security (Vercel/Supabase)
+
+**Vercel:**
+- Advisories checked: [date]
+- Next.js version: [version] - [status: current/outdated/vulnerable]
+- @vercel/* packages: [count] checked, [count] issues found
+- Configuration issues: [list any vercel.json or env exposure issues]
+- Recent CVEs affecting projects: [list or "None found"]
+
+**Supabase:**
+- Advisories checked: [date]
+- Issues found: [list or "None found"]
 
 ### New Since Last Audit
 - List of new findings

@@ -1,0 +1,61 @@
+{
+	"timestamp": "2025-01-15T14:30:00Z",
+	"projectsScanned": ["my-nextjs-app", "api-service"],
+	"summary": {
+		"critical": 0,
+		"high": 1,
+		"medium": 2,
+		"low": 3
+	},
+	"newIssues": [
+		{
+			"id": "CVE-2025-XXXXX",
+			"package": "example-package",
+			"version": "1.2.3",
+			"severity": "high",
+			"project": "my-nextjs-app",
+			"discoveredAt": "2025-01-15T14:30:00Z",
+			"source": "pnpm-audit",
+			"description": "Example vulnerability description"
+		}
+	],
+	"resolvedIssues": [],
+	"packagesUpdated": [],
+	"logsReviewed": {
+		"vercel": true,
+		"supabase": true
+	},
+	"breachIndicators": [],
+	"exploitationAssessments": [
+		{
+			"issueId": "CVE-2025-XXXXX",
+			"vulnerabilityType": "injection",
+			"remoteExploitable": true,
+			"publicExploitsAvailable": false,
+			"exploitationIndicatorsFound": false,
+			"evidence": [],
+			"status": "no_indicators_detected"
+		}
+	],
+	"potentiallyExploitedIssues": [],
+	"platformSecurity": {
+		"vercel": {
+			"advisoriesChecked": true,
+			"cveSearchDate": "2025-01-15T14:30:00Z",
+			"findings": [],
+			"configIssues": [],
+			"nextJsVersion": "15.1.0",
+			"vercelPackages": [
+				{"name": "@vercel/analytics", "version": "1.4.1", "vulnerable": false},
+				{"name": "@vercel/og", "version": "0.6.4", "vulnerable": false}
+			]
+		},
+		"supabase": {
+			"advisoriesChecked": true,
+			"findings": []
+		}
+	},
+	"recommendations": [
+		"Update example-package to version 1.2.4 to fix CVE-2025-XXXXX"
+	]
+}

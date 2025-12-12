@@ -62,6 +62,7 @@ cp -r .security-agent.example .security-agent
 - **Package Vulnerability Scan** - `pnpm audit` / `pip-audit`
 - **Dependabot Alerts** - GitHub API integration
 - **OSV API Query** - Open Source Vulnerabilities database
+- **Vercel Platform Security** - CVE search, @vercel/* package audits, Next.js vulnerabilities, config review
 - **Log Review** - Vercel/Supabase security patterns
 - **Breach Indicators** - Exposed secrets, hardcoded credentials
 - **Exploitation Assessment** - Detects if vulnerabilities were exploited before fix
