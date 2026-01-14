@@ -1,6 +1,6 @@
 # Security Audit
 
-Perform a comprehensive security audit.
+Perform a comprehensive security audit with deterministic, phased execution.
 
 **Argument:** $ARGUMENTS
 
@@ -23,17 +23,45 @@ The config contains:
 - `supabase.envFile`: Env file to read (e.g., `.env.local`)
 - `supabase.envVar`: Variable containing Supabase URL (e.g., `SUPABASE_URL`)
 
-## Execution Steps
+---
 
-### 1. Load History
+## Execution Flow
 
-Read these files from `~/Projects/agents/security-agent/.security-agent/`:
+Execute all 7 phases in strict order. Every phase runs regardless of findings (report "0 issues found" and continue).
+
+```
+Phase 1: Setup
+    ↓
+Phase 2: GitHub Alerts → Fix
+    ↓
+Phase 3: Package Audit → Fix
+    ↓
+Phase 4: Version Updates (Interactive)
+    ↓
+Phase 5: Security Research
+    ↓
+Phase 6: Breach Detection
+    ↓
+Phase 7: Report & Persist
+```
+
+---
+
+## Phase 1: Setup
+
+### 1.1 Load Configuration
+
+Read config from `~/Projects/agents/security-agent/.security-agent/config.json`.
+
+### 1.2 Load History
+
+Read from `~/Projects/agents/security-agent/.security-agent/`:
 - `known-issues.json` - Previously identified vulnerabilities
 - `fixed-issues.json` - Resolved issues with fix timestamps
 
-Review previous audit logs in `audit-logs/` to avoid redundant checks.
+Review recent audit logs in `audit-logs/` to identify recurring issues.
 
-### 2. Discover Projects
+### 1.3 Discover Projects
 
 **Determine scan target based on `$ARGUMENTS`:**
 
@@ -47,114 +75,268 @@ Review previous audit logs in `audit-logs/` to avoid redundant checks.
 
 Exclude directories matching `excludeDirs` config.
 
-**For single project mode** (default or named), verify the directory contains `package.json`, `pyproject.toml`, or `requirements.txt` before proceeding.
+**Output:** "Phase 1 complete. Scanning X project(s)."
 
-### 3. Package Vulnerability Scan
+---
 
-For each discovered project, run the appropriate audit:
+## Phase 2: GitHub Alerts
+
+**Priority:** This phase runs FIRST after setup. Fix GitHub-reported vulnerabilities before any other checks.
+
+### 2.1 Fetch Dependabot Alerts
+
+For each project with a GitHub remote:
+
+```bash
+gh api /repos/{owner}/{repo}/dependabot/alerts --jq '.[] | select(.state == "open") | {number: .number, package: .security_vulnerability.package.name, severity: .security_advisory.severity, cve: .security_advisory.cve_id, fix_version: .security_vulnerability.first_patched_version.identifier}'
+```
+
+### 2.2 Fix Each Alert
+
+For each open alert with an available fix version:
+
+**Node.js:**
+```bash
+cd <project-path>
+pnpm add <package>@<fix-version>
+```
+
+**Python:**
+```bash
+cd <project-path>
+uv pip install <package>==<fix-version>
+```
+
+### 2.3 Test and Commit
+
+After each fix:
+
+1. Run tests:
+   - Node.js: `pnpm test` (if test script exists)
+   - Python: `pytest` (if tests/ exists)
+
+2. If tests pass:
+   - Commit: `Fix: Update <package> to <version> (<CVE-ID>)`
+   - Dismiss alert via API if possible
+
+3. If tests fail:
+   - Revert: `git checkout -- package.json pnpm-lock.yaml` (or equivalent)
+   - Flag for manual review
+   - Keep in tracking list
+
+### 2.4 Phase Summary
+
+**Output:**
+```
+Phase 2 complete.
+- Dependabot alerts checked: X
+- Automatically fixed: Y
+- Failed/manual review needed: Z
+```
+
+---
+
+## Phase 3: Package Audit
+
+### 3.1 Run Local Audit
 
 **Node.js projects:**
 ```bash
 ~/Projects/agents/security-agent/scripts/scan-packages.sh <project-path>
 ```
 
-This runs `pnpm audit --json` or equivalent based on lockfile.
+This runs `pnpm audit --json` and parses output.
 
 **Python projects:**
-The script also handles `pip-audit` for Python dependencies.
-
-Parse the JSON output and correlate with `known-issues.json`.
-
-### 4. Dependency Version Check
-
-For each project:
-- Compare installed versions against latest available
-- Check for outdated packages with known CVEs
-- Query Dependabot alerts if GitHub repo exists:
-
 ```bash
-gh api /repos/{owner}/{repo}/dependabot/alerts --jq '.[] | {package: .security_vulnerability.package.name, severity: .security_advisory.severity, cve: .security_advisory.cve_id}'
+pip-audit -r requirements.txt --format=json
 ```
 
-### 5. Recent Vulnerability Search
+### 3.2 Fix Vulnerabilities
 
-Query OSV API for critical dependencies:
+For each vulnerability NOT already fixed in Phase 2:
+
+1. Check if fix version is available
+2. Check if update is patch/minor (not major)
+3. If both true: apply fix using same flow as Phase 2.3
+
+### 3.3 Phase Summary
+
+**Output:**
+```
+Phase 3 complete.
+- Vulnerabilities found: X
+- Automatically fixed: Y
+- Requires manual review: Z
+```
+
+---
+
+## Phase 4: Version Updates (Interactive)
+
+### 4.1 Check Outdated Packages
+
+**Node.js:**
+```bash
+pnpm outdated --format=json
+```
+
+**Python:**
+```bash
+pip list --outdated --format=json
+```
+
+### 4.2 Categorize Updates
+
+Separate packages into:
+- **Minor/Patch updates**: Same major version, newer minor or patch
+- **Major updates**: Different major version
+
+### 4.3 Prompt for Minor Updates
+
+Use AskUserQuestion to present available minor/patch updates:
+
+```
+Header: "Updates"
+Question: "Select minor/patch updates to apply:"
+Options: [list each package as "package (current → latest)"]
+multiSelect: true
+```
+
+For each selected package:
+1. Apply update: `pnpm add <package>@<latest>`
+2. Run tests
+3. If pass: commit `Update: <package> to <version>`
+4. If fail: revert, report failure
+
+### 4.4 Prompt for Major Updates
+
+For each major version update, use AskUserQuestion:
+
+```
+Header: "Major update"
+Question: "<package> has a major update (<current> → <latest>). How would you like to proceed?"
+Options:
+  1. "Add to TODO/tasks.md" - Create migration task with checklist
+  2. "Skip" - Track in known-issues.json for future
+  3. "Update anyway" - Apply update (may cause breaking changes)
+```
+
+**If "Add to TODO/tasks.md" selected:**
+
+Append to the project's `TODO/tasks.md`:
+
+```markdown
+## Migration: <package> v<current> → v<latest>
+
+- [ ] Review changelog: https://github.com/<owner>/<repo>/releases
+- [ ] Check for breaking changes
+- [ ] Update code as needed
+- [ ] Test thoroughly
+- [ ] Apply update: `pnpm add <package>@<latest>`
+```
+
+**If "Skip" selected:**
+
+Add to `known-issues.json` with:
+- `type`: "major_update_available"
+- `package`: package name
+- `currentVersion`: current version
+- `availableVersion`: latest version
+- `skippedAt`: ISO timestamp
+
+**If "Update anyway" selected:**
+
+Apply update using same flow as 4.3, but warn user about potential breaking changes.
+
+### 4.5 Phase Summary
+
+**Output:**
+```
+Phase 4 complete.
+- Minor updates applied: X
+- Major updates planned: Y
+- Major updates skipped: Z
+```
+
+---
+
+## Phase 5: Security Research
+
+### 5.1 Query OSV API
+
+For each direct dependency, query Open Source Vulnerabilities database:
 
 ```bash
 ~/Projects/agents/security-agent/scripts/query-osv.sh npm <package-name> <version>
 ~/Projects/agents/security-agent/scripts/query-osv.sh PyPI <package-name> <version>
 ```
 
+Record any vulnerabilities not already found in Phases 2-3.
+
+### 5.2 Web Search for Recent Advisories
+
 Use web search to check for recent security advisories affecting:
 - Next.js
 - Vercel
 - Supabase
+- React
 - Any major dependencies found in projects
 
-### 5a. Vercel Platform Security Check
+Search queries:
+- `"<package> security vulnerability 2025"` (use current year)
+- `"<package> CVE"` for specific packages
 
-**Check Vercel security advisories and recent CVEs:**
+Record any relevant findings not already captured.
 
-1. **Query for Vercel-specific vulnerabilities:**
-   - Search web for: `"Vercel" CVE site:nvd.nist.gov OR site:cve.mitre.org` (last 6 months)
-   - Search web for: `Vercel security advisory {current_year}`
-   - Check: https://vercel.com/changelog (filter for security-related entries)
+### 5.3 Phase Summary
 
-2. **Check @vercel/* package vulnerabilities:**
-   ```bash
-   # Query OSV for Vercel SDK packages found in projects
-   ~/Projects/agents/security-agent/scripts/query-osv.sh npm @vercel/analytics <version>
-   ~/Projects/agents/security-agent/scripts/query-osv.sh npm @vercel/og <version>
-   ~/Projects/agents/security-agent/scripts/query-osv.sh npm @vercel/kv <version>
-   ~/Projects/agents/security-agent/scripts/query-osv.sh npm @vercel/postgres <version>
-   ~/Projects/agents/security-agent/scripts/query-osv.sh npm @vercel/blob <version>
-   ~/Projects/agents/security-agent/scripts/query-osv.sh npm @vercel/edge <version>
-   ```
-
-3. **Check Next.js vulnerabilities** (Vercel-maintained):
-   ```bash
-   ~/Projects/agents/security-agent/scripts/query-osv.sh npm next <version>
-   ```
-   Also search: `Next.js CVE {current_year}` and `Next.js security vulnerability`
-
-4. **Review Vercel-specific attack vectors:**
-   - Edge function vulnerabilities
-   - Serverless function timeout/memory exploits
-   - Environment variable exposure risks
-   - Preview deployment security (exposed secrets in PR previews)
-   - Build log exposure
-
-5. **Check project Vercel configuration for security issues:**
-   ```bash
-   # Look for vercel.json misconfigurations
-   if [[ -f "<project-path>/vercel.json" ]]; then
-     # Check for overly permissive headers, redirects, or rewrites
-     cat <project-path>/vercel.json | jq '.headers, .redirects, .rewrites' 2>/dev/null
-   fi
-
-   # Check for exposed environment variables in next.config.js
-   grep -E "NEXT_PUBLIC_.*SECRET|NEXT_PUBLIC_.*KEY|NEXT_PUBLIC_.*TOKEN" <project-path>/next.config.* 2>/dev/null
-   ```
-
-6. **Flag Vercel-specific findings:**
-   - Add to report under "Platform Security" section
-   - Cross-reference with project's deployed Vercel version (if detectable)
-   - Note any mitigations already in place (WAF, rate limiting, etc.)
-
-### 6. Log Review
-
-If configured, check deployment and function logs.
-
-**Extract Supabase project ref from each project (if `supabase.extractFromEnv` is true):**
-```bash
-# Read only SUPABASE_URL from the project's .env.local, extract project ref
-grep "^SUPABASE_URL=" <project-path>/.env.local | sed 's/.*https:\/\/\([^.]*\)\.supabase\.co.*/\1/'
+**Output:**
+```
+Phase 5 complete.
+- OSV queries: X packages checked
+- New vulnerabilities found: Y
+- Recent advisories: Z
 ```
 
-Security notes:
-- Only parse the specific env var, ignore all other values
-- Extract only the subdomain (project ref), discard the full URL
-- Never log or persist the extracted ref beyond the current audit session
+---
+
+## Phase 6: Breach Detection
+
+### 6.1 Git History Secrets Check
+
+For each project with a git repository:
+
+```bash
+git log -p --all | grep -iE "(api[_-]?key|secret|password|token|credential)" | head -50
+```
+
+Flag any potential exposed secrets.
+
+### 6.2 Verify .gitignore
+
+Check that sensitive files are excluded:
+
+```bash
+grep -E "\.env|credentials|secrets" .gitignore
+```
+
+Report if `.env*` files are NOT in .gitignore.
+
+### 6.3 Hardcoded Credentials Scan
+
+```bash
+grep -rE "(api[_-]?key|password|secret)\s*[:=]\s*['\"][^'\"]+['\"]" --include="*.js" --include="*.ts" --include="*.py" .
+```
+
+Flag any matches for review.
+
+### 6.4 Log Review (If Configured)
+
+**Extract Supabase project ref (if `supabase.extractFromEnv` is true):**
+```bash
+grep "^SUPABASE_URL=" <project-path>/.env.local | sed 's/.*https:\/\/\([^.]*\)\.supabase\.co.*/\1/'
+```
 
 **Run log checks:**
 ```bash
@@ -167,26 +349,22 @@ Look for patterns indicating:
 - Rate limiting triggers
 - Unauthorized access attempts
 
-### 7. Breach Indicators
+### 6.5 Phase Summary
 
-For each project with a git repository:
-
-**Check for exposed secrets in history:**
-```bash
-git log -p --all | grep -iE "(api[_-]?key|secret|password|token|credential)" | head -50
+**Output:**
+```
+Phase 6 complete.
+- Secrets in git history: X findings
+- .gitignore status: OK/WARNING
+- Hardcoded credentials: X findings
+- Log anomalies: X findings
 ```
 
-**Verify .gitignore includes sensitive files:**
-```bash
-grep -E "\.env|credentials|secrets" .gitignore
-```
+---
 
-**Check for hardcoded credentials:**
-```bash
-grep -rE "(api[_-]?key|password|secret)\s*[:=]\s*['\"][^'\"]+['\"]" --include="*.js" --include="*.ts" --include="*.py" .
-```
+## Phase 7: Report & Persist
 
-### 8. Generate Report
+### 7.1 Generate Summary
 
 Summarize all findings by severity:
 - **Critical**: Actively exploited CVEs, exposed secrets
@@ -199,10 +377,9 @@ Compare against previous audits to highlight:
 - Resolved issues
 - Recurring problems
 
-### 9. Persist Results
+### 7.2 Write Audit Log
 
-**Save audit log:**
-Write results to `~/Projects/agents/security-agent/.security-agent/audit-logs/YYYYMMDD-HHMMSS.json`
+Save results to `~/Projects/agents/security-agent/.security-agent/audit-logs/YYYYMMDD-HHMMSS.json`
 
 Format:
 ```json
@@ -210,42 +387,22 @@ Format:
   "timestamp": "ISO-8601",
   "projectsScanned": [],
   "summary": {"critical": 0, "high": 0, "medium": 0, "low": 0},
+  "phases": {
+    "githubAlerts": {"checked": 0, "fixed": 0, "manual": 0},
+    "packageAudit": {"found": 0, "fixed": 0, "manual": 0},
+    "versionUpdates": {"minorApplied": 0, "majorPlanned": 0, "skipped": 0},
+    "securityResearch": {"osvChecked": 0, "newVulns": 0},
+    "breachDetection": {"secretsFound": 0, "gitignoreOk": true, "hardcodedCreds": 0}
+  },
   "newIssues": [],
   "resolvedIssues": [],
   "packagesUpdated": [],
-  "logsReviewed": {},
-  "breachIndicators": [],
-  "exploitationAssessments": [
-    {
-      "issueId": "CVE-XXXX",
-      "vulnerabilityType": "injection",
-      "remoteExploitable": true,
-      "publicExploitsAvailable": false,
-      "exploitationIndicatorsFound": false,
-      "evidence": [],
-      "status": "no_indicators_detected"
-    }
-  ],
-  "potentiallyExploitedIssues": [],
-  "platformSecurity": {
-    "vercel": {
-      "advisoriesChecked": true,
-      "cveSearchDate": "ISO-8601",
-      "findings": [],
-      "configIssues": [],
-      "nextJsVersion": "x.x.x",
-      "vercelPackages": [
-        {"name": "@vercel/analytics", "version": "x.x.x", "vulnerable": false}
-      ]
-    },
-    "supabase": {
-      "advisoriesChecked": true,
-      "findings": []
-    }
-  },
+  "majorUpdatesPending": [],
   "recommendations": []
 }
 ```
+
+### 7.3 Update Tracking Files
 
 **Update known-issues.json:**
 Add new vulnerabilities with:
@@ -255,141 +412,16 @@ Add new vulnerabilities with:
 - `severity`: critical/high/medium/low
 - `project`: Project where found
 - `discoveredAt`: ISO timestamp
-- `source`: How it was found (pnpm-audit, osv, etc.)
+- `source`: How it was found (dependabot, pnpm-audit, osv, etc.)
 - `description`: Brief description
-- `exploitationAssessment`: Object with exploitation analysis results
-  - `vulnerabilityType`: Type of vulnerability (injection, deserialization, auth_bypass, path_traversal, etc.)
-  - `remoteExploitable`: Boolean
-  - `publicExploitsAvailable`: Boolean
-  - `exploitationIndicatorsFound`: Boolean
-  - `evidence`: Array of evidence objects (file paths, commit hashes, log entries)
-  - `assessedAt`: ISO timestamp of when assessment was performed
 
 **Update fixed-issues.json:**
 Move resolved issues with:
 - Original fields plus `fixedAt` timestamp
 - `fixedVersion`: Version that resolved the issue
-- `fixMethod`: How it was fixed
+- `fixMethod`: How it was fixed (auto/manual)
 
-### 10. Exploitation Assessment
-
-Before applying fixes, evaluate whether identified vulnerabilities may have already been exploited. For each security issue being fixed in this session:
-
-**a) Analyze vulnerability characteristics:**
-- Determine if the vulnerability allows remote exploitation
-- Check if authentication is required to exploit
-- Assess if public exploit code exists (search GitHub, ExploitDB, Metasploit modules)
-
-**b) Search codebase for exploitation indicators:**
-
-For **injection vulnerabilities** (SQL injection, command injection, XSS):
-```bash
-# Check git history for suspicious commits around user-input handling code
-git log --oneline --all --since="1 year ago" -p -- "*.js" "*.ts" "*.py" | \
-  grep -iE "(eval|exec|system|shell|innerHTML|dangerouslySetInnerHTML)" | head -50
-
-# Look for unexpected data patterns in configuration or database files
-grep -rE "(\$\{|<%|<\?|;--|UNION\s+SELECT)" --include="*.json" --include="*.sql" . 2>/dev/null
-```
-
-For **prototype pollution / deserialization** vulnerabilities:
-```bash
-# Check for unexpected object properties in config files
-grep -rE '("__proto__|constructor|prototype)' --include="*.json" . 2>/dev/null
-
-# Search for serialized payloads in data files
-grep -rE "(rO0AB|aced0005|gASV)" --include="*.json" --include="*.txt" . 2>/dev/null
-```
-
-For **authentication/authorization bypasses**:
-```bash
-# Review recent auth-related commits for suspicious patterns
-git log --oneline --all --since="6 months ago" -p -- "*auth*" "*login*" "*session*" | head -100
-
-# Check logs for auth anomalies (if available)
-grep -iE "(admin|root|sudo|superuser)" ~/.security-agent/audit-logs/*.json 2>/dev/null
-```
-
-For **path traversal / file inclusion**:
-```bash
-# Search for traversal patterns in logs and data
-grep -rE "(\.\.\/|\.\.\\\\|%2e%2e)" . 2>/dev/null | head -50
-```
-
-**c) Review git history around vulnerable code:**
-```bash
-# Get commits that touched the vulnerable file/function
-git log --oneline -20 -- <vulnerable-file>
-
-# Check for unusual commit patterns (odd hours, bulk changes, unfamiliar authors)
-git log --format="%h %ai %an: %s" --since="6 months ago" -- <vulnerable-file>
-```
-
-**d) Check runtime artifacts:**
-- Examine log files for error patterns associated with exploitation attempts
-- Look for unexpected files in temp directories or upload locations
-- Check for modified timestamps on sensitive files
-
-**e) Document findings:**
-
-If exploitation indicators are found:
-- Flag issue as **POTENTIALLY EXPLOITED** in the audit report
-- Record specific evidence (file paths, commit hashes, log entries)
-- Add to `known-issues.json` with `exploitationIndicators` array
-- Recommend incident response procedures before applying fix
-
-If no indicators found:
-- Note "No exploitation indicators detected" in report
-- Proceed with fix application
-
-**Severity escalation:**
-- If exploitation is suspected, escalate severity to **Critical** regardless of original rating
-- Recommend immediate response: rotate credentials, review access logs, notify stakeholders
-
-### 11. Apply Automatic Fixes
-
-For vulnerabilities with available fix versions, apply updates automatically when ALL of these conditions are met:
-- Fix version is specified in the vulnerability advisory
-- Update is patch or minor version (not major)
-- Package is a direct dependency
-
-**Node.js:**
-```bash
-cd <project-path>
-pnpm add <package>@<fix-version>   # For specific fix versions
-pnpm update <package>               # For minor/patch updates
-```
-
-**Python:**
-```bash
-cd <project-path>
-uv pip install <package>==<fix-version>
-```
-
-**After each fix:**
-1. Run tests if available:
-   - Node.js: `pnpm test` (if test script exists in package.json)
-   - Python: `pytest` (if tests/ directory exists)
-
-2. If tests pass:
-   - Commit changes: `Fix: Update <package> to <version> (<CVE-ID>)`
-   - Update `fixed-issues.json` with resolution details
-   - Remove from `known-issues.json`
-
-3. If tests fail:
-   - Revert: `git checkout -- package.json pnpm-lock.yaml` or `git checkout -- requirements.txt`
-   - Flag issue for manual review in report
-   - Keep in `known-issues.json` with note about failed auto-fix
-
-**Skip automatic fixes (flag for manual review) when:**
-- Major version update required
-- Transitive dependency (requires upstream update)
-- No fix version available
-- Tests fail after update
-
-## Output Format
-
-Present findings in a clear summary:
+### 7.4 Display Final Report
 
 ```
 ## Security Audit Summary - YYYY-MM-DD
@@ -397,6 +429,13 @@ Present findings in a clear summary:
 ### Projects Scanned
 - project-a (Node.js)
 - project-b (Python)
+
+### Phase Results
+| Phase | Checked | Fixed | Manual |
+|-------|---------|-------|--------|
+| GitHub Alerts | X | Y | Z |
+| Package Audit | X | Y | Z |
+| Version Updates | X | Y | Z |
 
 ### Findings by Severity
 - Critical: X
@@ -407,41 +446,10 @@ Present findings in a clear summary:
 ### Critical Issues
 1. [CVE-XXXX] package@version in project-a
    - Description
-   - Recommended fix
+   - Status: Fixed/Manual review needed
 
-### Exploitation Assessment
-For each vulnerability being fixed:
-
-1. [CVE-XXXX] package@version
-   - Vulnerability type: [injection/deserialization/auth bypass/etc.]
-   - Remote exploitable: Yes/No
-   - Public exploits available: Yes/No
-   - **Exploitation indicators found:** Yes/No
-   - Evidence: [file paths, commit hashes, log entries if applicable]
-   - Status: POTENTIALLY EXPLOITED / No indicators detected
-
-⚠️ POTENTIALLY EXPLOITED ISSUES (if any):
-- [CVE-XXXX] Evidence: [summary of findings]
-  - Recommended immediate actions before fix
-
-### Platform Security (Vercel/Supabase)
-
-**Vercel:**
-- Advisories checked: [date]
-- Next.js version: [version] - [status: current/outdated/vulnerable]
-- @vercel/* packages: [count] checked, [count] issues found
-- Configuration issues: [list any vercel.json or env exposure issues]
-- Recent CVEs affecting projects: [list or "None found"]
-
-**Supabase:**
-- Advisories checked: [date]
-- Issues found: [list or "None found"]
-
-### New Since Last Audit
-- List of new findings
-
-### Resolved Since Last Audit
-- List of fixed issues
+### Pending Major Updates
+- package: current → latest (TODO created)
 
 ### Recommendations
 1. Priority actions
@@ -449,3 +457,13 @@ For each vulnerability being fixed:
 
 Results saved to: ~/Projects/agents/security-agent/.security-agent/audit-logs/YYYYMMDD-HHMMSS.json
 ```
+
+---
+
+## Notes
+
+- Every phase runs regardless of findings
+- Phases execute in strict order (no parallel execution)
+- User prompts appear only in Phase 4 for version updates
+- All fixes are tested before committing
+- Failed fixes are reverted and flagged for manual review
