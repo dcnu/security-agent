@@ -1,15 +1,13 @@
-# Security Agent
+# Security Audit
 
 A Claude Code slash command that audits repositories for package vulnerabilities, checks for recent security advisories, reviews logs, and maintains a persistent record of findings and fixes. Automatically applies patch/minor updates for known CVEs.
-
-Assumes this repo lives at `~/projects/agents/security-agent/` alongside sibling project directories.
 
 ## Setup
 
 ### Prerequisites
 
 ```bash
-brew install gh supabase/tap/supabase jq
+brew install gh jq
 pnpm add -g vercel
 uv pip install pip-audit
 ```
@@ -19,55 +17,38 @@ uv pip install pip-audit
 ```bash
 gh auth login
 vercel login
-supabase login
+supabase login  # optional, for log review
 ```
 
 ### Install
 
-1. Copy the slash command:
-```bash
-cp .claude/commands/security-audit.md ~/.claude/commands/
-```
+Copy the slash command and scripts to your Claude commands directory:
 
-2. Initialize local config:
 ```bash
-cp -r .security-agent.example .security-agent
-```
-
-3. Edit `.security-agent/config.json`:
-```json
-{
-  "scanRoot": "~/projects",
-  "excludeDirs": ["node_modules", ".git", "archive", "agents", ".next", ".venv", "__pycache__"],
-  "vercelTeam": "team_xxxxx",
-  "githubOrg": "your-username",
-  "supabase": {
-    "extractFromEnv": true,
-    "envFile": ".env.local",
-    "envVar": "SUPABASE_URL"
-  }
-}
+cp security-audit.md ~/.claude/commands/
+cp -r security-audit/ ~/.claude/commands/
+chmod +x ~/.claude/commands/security-audit/*.sh
 ```
 
 ## Usage
 
+Run in any repository:
+
 ```bash
-/user:security-audit              # Scan current directory
-/user:security-audit --all        # Scan all projects in scanRoot
-/user:security-audit my-project   # Scan specific project
+/security-audit
 ```
+
+Results are stored in `.security-audit/` within the scanned repository (automatically added to `.gitignore`).
 
 ## Features
 
 - **Package Vulnerability Scan** - `pnpm audit` / `pip-audit`
 - **Dependabot Alerts** - GitHub API integration
 - **OSV API Query** - Open Source Vulnerabilities database
-- **Vercel Platform Security** - CVE search, @vercel/* package audits, Next.js vulnerabilities, config review
 - **Log Review** - Vercel/Supabase security patterns
 - **Breach Indicators** - Exposed secrets, hardcoded credentials
-- **Exploitation Assessment** - Detects if vulnerabilities were exploited before fix
 - **Automatic Fixes** - Patch/minor updates applied automatically
-- **Persistence** - Tracks issues over time
+- **Persistence** - Tracks issues over time per repository
 
 ## Automatic Fixes
 
@@ -83,48 +64,37 @@ After fix:
 
 Manual review for: major updates, transitive deps, no fix available, test failures.
 
-## Exploitation Assessment
+## Output Structure
 
-Before applying fixes, evaluates whether vulnerabilities may have been exploited:
+Each repository gets a `.security-audit/` directory:
 
-- **Vulnerability analysis** - Remote exploitability, public exploits available
-- **Codebase scanning** - Searches for exploitation indicators by vulnerability type:
-  - Injection: suspicious eval/exec patterns, SQL injection signatures
-  - Prototype pollution: `__proto__` properties, serialized payloads
-  - Auth bypass: anomalous auth commits, privileged access patterns
-  - Path traversal: `../` patterns in logs/data
-- **Git history review** - Unusual commits around vulnerable code
-- **Runtime artifacts** - Log patterns, unexpected files, timestamp anomalies
-
-If exploitation indicators found:
-- Issue flagged as **POTENTIALLY EXPLOITED**
-- Severity escalated to Critical
-- Evidence recorded in audit log
-- Incident response recommended before applying fix
+```
+.security-audit/
+├── audit-logs/          # Historical audit results
+│   └── YYYYMMDD-HHMMSS.json
+├── known-issues.json    # Currently tracked vulnerabilities
+└── fixed-issues.json    # Resolved issues with timestamps
+```
 
 ## Directory Structure
 
 ```
-security-agent/
-├── .claude/commands/
-│   └── security-audit.md     # Slash command
-├── .security-agent.example/  # Template (tracked)
-├── .security-agent/          # Local data (gitignored)
-│   ├── config.json
-│   ├── known-issues.json
-│   ├── fixed-issues.json
-│   └── audit-logs/
-├── scripts/
+security-audit/
+├── security-audit.md        # Slash command (copy to ~/.claude/commands/)
+├── security-audit/          # Scripts (copy to ~/.claude/commands/)
 │   ├── scan-packages.sh
-│   ├── check-logs.sh
-│   └── query-osv.sh
-└── README.md
+│   ├── query-osv.sh
+│   └── check-logs.sh
+├── README.md
+└── LICENSE
 ```
 
-## Scripts
+## Phases
 
-```bash
-./scripts/scan-packages.sh <project-path>    # Package audit
-./scripts/check-logs.sh [vercel] [supabase]  # Log review
-./scripts/query-osv.sh npm lodash 4.17.20    # OSV lookup
-```
+1. **Setup** - Initialize output directory, detect project type
+2. **GitHub Alerts** - Fetch and fix Dependabot alerts
+3. **Package Audit** - Run local vulnerability scans
+4. **Version Updates** - Interactive minor/major update prompts
+5. **Security Research** - Query OSV API, web search for advisories
+6. **Breach Detection** - Git history secrets, hardcoded credentials
+7. **Report** - Generate summary, persist results

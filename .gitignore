@@ -1,11 +1,5 @@
-# Local data (contains project-specific info)
-.security-agent/
-
-# Keep templates
-!.security-agent.example/
-!.claude/
-!.claude/commands
-!.claude/commands/security-audit
+# Local audit data (if testing locally)
+.security-audit/
 
 # Environment files
 .env*
@@ -19,3 +13,4 @@ node_modules/
 # Project docs
 TODO/
 CLAUDE.md
+archive/
